@@ -1,0 +1,177 @@
+
+with ad as(
+WITH duplicated_data AS (
+    SELECT 
+        gh_name,
+        gh_long_name,
+        veggie,
+        CASE 
+            WHEN gh_count = 2 AND ROUND(veggie_proportion * gable, 0) = 0 THEN 1
+            WHEN gh_count = 2 AND ROUND(veggie_proportion * gable, 0) = gable THEN gable-1
+            WHEN gh_count = 2 AND ROUND(veggie_proportion * gable, 0) != 0 THEN ROUND(veggie_proportion * gable, 0)
+            ELSE gable
+        END AS veg_prop,
+        gable,
+        COUNT(*) OVER (PARTITION BY gh_long_name) AS gh_count
+    FROM (
+        SELECT 
+            gh_name,
+            t3.gh_long_name,
+            ROUND(no_of_gables, 0) AS gable,
+            t2.vegetable_subcategory AS veggie,
+            SUM(actual_population) AS actual_polybag,
+            SUM(actual_population) / SUM(SUM(actual_population)) OVER (PARTITION BY gh_name) AS veggie_proportion,
+            COUNT(*) OVER (PARTITION BY gh_long_name) AS gh_count
+        FROM 
+            `biap-datainfra-gcp.ckp_dds.gh_status` t1
+        LEFT JOIN (
+            SELECT DISTINCT vegetable_variant, vegetable_subcategory
+            FROM `global_dds.vegetable_master`
+        ) t2
+            ON t1.vegetable_variety = t2.vegetable_variant
+        LEFT JOIN `ckp_dds.gh_master` t3
+            ON t1.gh_name = t3.gh_code
+        WHERE 
+            end_date = '2099-12-31' AND
+            gh_long_name NOT LIKE '%OP%' AND
+            gh_name != 'G01'
+        GROUP BY 
+            gh_name, t3.gh_long_name, gable, veggie
+        ORDER BY 
+            gh_long_name, actual_polybag ASC
+    ) AS subquery
+),
+numbered_data AS (
+    SELECT 
+        dd.*,
+        ROW_NUMBER() OVER (PARTITION BY dd.gh_name ORDER BY dd.veggie, dd.gable) AS gable_id
+    FROM 
+        duplicated_data dd
+    JOIN 
+        (SELECT 1 AS num UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9 UNION ALL SELECT 10 
+        UNION ALL SELECT 11 UNION ALL SELECT 12 UNION ALL SELECT 13 UNION ALL SELECT 14 UNION ALL SELECT 15 UNION ALL SELECT 16 UNION ALL SELECT 17 UNION ALL SELECT 18 UNION ALL SELECT 19 UNION ALL SELECT 20) AS numbers
+    ON numbers.num <= dd.veg_prop
+),
+gable_veggie as (
+    SELECT 
+    gh_name,
+    gh_long_name,
+    CASE
+        WHEN gable_id < 10 THEN CONCAT(gh_long_name, '-00', gable_id)
+        ELSE CONCAT(gh_long_name, '-0', gable_id)
+    END AS gable_id_name,
+    veggie
+FROM 
+    numbered_data
+ORDER BY 
+    gh_name, gable_id
+),
+emitter_df as (
+    select gh_name, gh_long_name, gable_id_name,concat(gable_id_name,'-',emitter_suffix) as emitter_id, veggie
+   from gable_veggie
+   cross join unnest([1,2,3]) as emitter_suffix
+)
+
+select gh_long_name, veggie, round(1/count(*),5) as vegetable_proportion
+from emitter_df
+group by 1,2
+order by gh_long_name ASC,vegetable_proportion ASC
+
+),
+output as(
+    SELECT 
+    t6.date as harvest_date,
+    date_add(t6.date, interval 1 day) as waste_date,
+    date_add(t6.date, interval 2 day) as sales_date,
+    t6.mty,
+    t6.gh_long_name,
+    t6.veggie,
+    t6.bruto_kg,
+    round((t6.bruto_kg * t7.waste),2) as waste_kg,
+    round((t6.bruto_kg - (t6.bruto_kg * t7.waste)),2) as netto_kg,
+    t6.price,
+    round(((t6.bruto_kg - (t6.bruto_kg * t7.waste)) * t6.price),2) as sales_idr
+FROM (
+    SELECT 
+        t1.date,
+        FORMAT_DATE('%Y-%m', CAST(t1.date AS DATE)) AS mty,
+        t1.veggie,
+        t2.tandon_netsuite,
+        t2.gh_long_name,
+        t1.bruto_kg,
+        t5.price
+    FROM (
+        SELECT 
+            date,
+            CASE
+                WHEN LOWER(harvest_variant_name) LIKE '%big chili%' THEN 'Big Chili'
+                WHEN LOWER(harvest_variant_name) LIKE '%rawit chili%' THEN 'Rawit Chili'
+                WHEN LOWER(harvest_variant_name) LIKE '%curly chili%' THEN 'Curly Chili'
+                WHEN LOWER(harvest_variant_name) LIKE '%tomat%' THEN 'Tomato Cherry'
+                ELSE harvest_variant_name
+            END AS veggie,
+            gh_name AS gh_code,
+            ROUND(SUM(bruto_kg), 2) AS bruto_kg
+        FROM `biap-datainfra-gcp.ckp_dds.harvest`
+        WHERE 
+            date >= '2025-01-01' AND date < '2026-01-01'
+        GROUP BY 
+            date, gh_name, harvest_variant_name
+    ) AS t1
+    LEFT JOIN `biap-datainfra-gcp.ckp_dds.gh_master` t2
+        ON t1.gh_code = t2.gh_code
+    LEFT JOIN `biap-datainfra-gcp.global_dds.ckp_price_sku_report` t5
+        ON FORMAT_DATE('%Y-%m', CAST(t1.date AS DATE)) = FORMAT_DATE('%Y-%m', CAST(t5.date AS DATE))
+        AND t1.veggie = t5.vegetable
+    WHERE 
+        t2.gh_long_name IS NOT NULL 
+        AND t2.gh_long_name NOT LIKE '%OP%' 
+        AND t1.veggie IN ('Tomato Cherry', 'Rawit Chili', 'Big Chili','Curly Chili')
+) t6
+LEFT JOIN `biap-datainfra-gcp.global_stg.ckp_waste_report` t7
+    ON FORMAT_DATE('%Y-%m', CAST(t6.date AS DATE)) = FORMAT_DATE('%Y-%m', CAST(t7.date AS DATE))
+
+),
+
+un_gh as (
+  select gh_long_name, veggie, vegetable_proportion,
+       row_number() over(partition by gh_long_name order by vegetable_proportion ASC) as rn
+from ad
+
+),
+unique_gh as (
+    select gh_long_name, veggie, vegetable_proportion from un_gh where un_gh.rn = 1 order by un_gh.gh_long_name ASC
+),
+
+res as (
+    select d1.harvest_date,d1.waste_date, d1.sales_date, d1.mty, d1.gh_long_name, d1.veggie as actual_veg,
+d1.bruto_kg, d1.waste_kg, d1.netto_kg, d1.price, d1.sales_idr,d2.veggie as report_veg, d2.vegetable_proportion as prop_veg   from output d1
+left join ad d2
+on d1.gh_long_name = d2.gh_long_name and d1.veggie = d2.veggie
+),
+
+fix1 as (
+    select * from res where res.report_veg is not null
+),
+need_fix as (
+    select * from res where res.report_veg is null
+),
+
+fix2 as(
+    select df1.harvest_date,df1.waste_date, df1.sales_date, df1.mty, df1.gh_long_name, df1.actual_veg as actual_veg,
+df1.bruto_kg, df1.waste_kg, df1.netto_kg, df1.price, df1.sales_idr,df2.veggie as report_veg, df2.vegetable_proportion as prop_veg from need_fix df1
+left join unique_gh df2
+on df1.gh_long_name = df2.gh_long_name
+),
+
+fix_data as(
+    select * from fix1
+    union all
+    select * from fix2
+)
+
+select harvest_date, waste_date, sales_date, gh_long_name, report_veg, actual_veg,
+bruto_kg, waste_kg, netto_kg, price, sales_idr,prop_veg as emitter_proportion,
+ round(bruto_kg * prop_veg,5) as bruto_emitter,round(waste_kg * prop_veg,5) as waste_emitter,
+ round(netto_kg * prop_veg,5) as netto_emitter, round(sales_idr * prop_veg,5) as sales_idr_emitter
+from fix_data
