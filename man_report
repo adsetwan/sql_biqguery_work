@@ -1,4 +1,5 @@
-#This query is quite complex and involves several nested subqueries, joins, and data transformations. It appears to process agricultural data related to harvest, waste, sales, and vegetable proportions.
+#This query is quite complex and involves several nested subqueries, joins, and data transformations.
+#It appears to process agricultural data related to harvest, waste, and sales.
 with ad as(
 WITH duplicated_data AS (
     SELECT 
@@ -23,13 +24,13 @@ WITH duplicated_data AS (
             SUM(actual_population) / SUM(SUM(actual_population)) OVER (PARTITION BY gh_name) AS veggie_proportion,
             COUNT(*) OVER (PARTITION BY gh_long_name) AS gh_count
         FROM 
-            `biap-datainfra-gcp.ckp_dds.gh_status` t1
+            `project_id.table_id.gh_status` t1
         LEFT JOIN (
             SELECT DISTINCT vegetable_variant, vegetable_subcategory
-            FROM `global_dds.vegetable_master`
+            FROM `table_id.vegetable_master`
         ) t2
             ON t1.vegetable_variety = t2.vegetable_variant
-        LEFT JOIN `ckp_dds.gh_master` t3
+        LEFT JOIN `table_id.gh_master` t3
             ON t1.gh_name = t3.gh_code
         WHERE 
             end_date = '2099-12-31' AND
@@ -112,15 +113,15 @@ FROM (
             END AS veggie,
             gh_name AS gh_code,
             ROUND(SUM(bruto_kg), 2) AS bruto_kg
-        FROM `biap-datainfra-gcp.ckp_dds.harvest`
+        FROM `project_id.table_id.harvest`
         WHERE 
             date >= '2025-01-01' AND date < '2026-01-01'
         GROUP BY 
             date, gh_name, harvest_variant_name
     ) AS t1
-    LEFT JOIN `biap-datainfra-gcp.ckp_dds.gh_master` t2
+    LEFT JOIN `project_id.table_id.gh_master` t2
         ON t1.gh_code = t2.gh_code
-    LEFT JOIN `biap-datainfra-gcp.global_dds.ckp_price_sku_report` t5
+    LEFT JOIN `project_id.table_id.ckp_price_sku_report` t5
         ON FORMAT_DATE('%Y-%m', CAST(t1.date AS DATE)) = FORMAT_DATE('%Y-%m', CAST(t5.date AS DATE))
         AND t1.veggie = t5.vegetable
     WHERE 
@@ -128,7 +129,7 @@ FROM (
         AND t2.gh_long_name NOT LIKE '%OP%' 
         AND t1.veggie IN ('Tomato Cherry', 'Rawit Chili', 'Big Chili','Curly Chili')
 ) t6
-LEFT JOIN `biap-datainfra-gcp.global_stg.ckp_waste_report` t7
+LEFT JOIN `project_id.table_id.ckp_waste_report` t7
     ON FORMAT_DATE('%Y-%m', CAST(t6.date AS DATE)) = FORMAT_DATE('%Y-%m', CAST(t7.date AS DATE))
 
 ),
